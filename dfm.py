@@ -9,6 +9,7 @@ DFM -> Base class
 # Imports
 import numpy as np
 import pandas as pd
+import random
 from statsmodels.tsa.statespace.dynamic_factor_mq import DynamicFactorMQ
 from statsmodels.tsa.api import VAR
 from statsmodels.tsa.arima.model import ARIMA
@@ -18,13 +19,13 @@ class DFM:
         """
         Parameters
         ----------
-        k_factors : int
+        k_factors: int
             Number of hidden common factors to extract
             MACROCAST uses 3 factors .
-        factor_order : int
+        factor_order: int
             Number of lags in the factor dynamics — the p in the VAR(p)/AR(p) that
             governs how the factors evolve over time (their momentum). MACROCAST uses 2.
-        maxiter : int, default 80
+        maxiter: int, default 80
             Cap on EM iterations when fitting DynamicFactorMQ (speed vs convergence
             trade-off). Raise it if you see non-convergence warnings
         """
@@ -34,23 +35,23 @@ class DFM:
         self.maxiter = maxiter
         self.bundle = None
 
-    """
-    Fitting the Dynamic Factor Model
-
-    Parameters
-    ----------
-    y_df: pd.DataFrame
-        The input data panel: rows = time (months), columns = variables/series.
-        The data the DFM is fit on.
-
-    Returns
-    -------
-    dict:
-        Parameter bundle: loadings (B), idiosyncratic noise sizes (resid_std),
-        factor dynamics (var_meta: coefs + shock covariance), historical factor
-        path (factors_hist), and dimensions (k, p).
-    """
     def fit_dfm(self, y_df):
+        """
+        Fitting the Dynamic Factor Model
+    
+        Parameters
+        ----------
+        y_df: pd.DataFrame
+            The input data panel: rows = time (months), columns = variables/series.
+            The data the DFM is fit on.
+    
+        Returns
+        -------
+        dict:
+            Parameter bundle: loadings (B), idiosyncratic noise sizes (resid_std),
+            factor dynamics (var_meta: coefs + shock covariance), historical factor
+            path (factors_hist), and dimensions (k, p).
+        """
         model = DynamicFactorMQ(y_df, factors = self.k_factors, factor_orders = self.factor_order)
         res = model.fit(disp = False, maxiter = self.maxiter)
         self.bundle = res
@@ -94,26 +95,47 @@ class DFM:
 
         return self
 
+    def _draw_factor_innovations(self, total, rng):
+        """
+        A seperate method to draw factor innovations.
+        Allows for the addition of DFM-SV and DFM-GARCH.
 
-    """Generate Synthetic Data Pannels.
- 
         Parameters
         ----------
-        n_steps : int
+        total: int
+            Total number of time steps to draw.
+        rng: np.random.Generator
+            Random source.
+            
+        Returns
+        -------
+        np.ndarray
+            Factor innovations drawn from the fitted factor covariance.
+        """
+        k = self.bundle['k']
+        cov = self.bundle['var_meta']['cov']
+        return rng.multivariate_normal(np.zeros(k), cov, size = total)
+
+    def generate(self, n_steps, burn_in, rng, shock_scale = 1.0, resid_scale = 1.0):
+        """
+        Generate Synthetic Data Pannels.
+        
+        Parameters
+        ----------
+        n_steps: int
             Length of the output panel.
-        burn_in : int
+        burn_in: int
             Extra steps rolled at the start and then thrown away.
             Used so the factors forget the all-zeros initial state.
-        rng : np.random.Generator
+        rng: np.random.Generator
             Random source.
-        shock_scale : float
+        shock_scale: float
             Multiplier on the factor innovations. 
             How much the shared factors move around, which makes the dynamics up or down.
-        resid_scale : float
+        resid_scale: float
             Multiplier on the per-series noise.
             How much each series wobbles on its own, independent of the shared factors.
         """
-    def generate(self, n_steps, burn_in, rng, shock_scale = 1.0, resid_scale = 1.0):
         b = self.bundle
         B = b['B']
         k = b['k']
@@ -129,7 +151,7 @@ class DFM:
             phi = var_meta['phi']
             for t in range(total):
                 v = u[t, 0]
-                for lag in range(1, min(p, len(phi) + 1)):
+                for lag in range(1, min(p, len(phi)) + 1):
                     if t - lag >= 0:
                         v += phi[lag - 1] * factors[t - lag, 0]
                 factors[t, 0] = v
@@ -146,6 +168,6 @@ class DFM:
         eps = rng.normal(0.0, resid_std, size = (n_steps, len(resid_std))) * float(resid_scale)
         return factors @ B + eps
 
-    def generate_df(self, n_panels, n_steps = 400, burn_in = 60, rng = 60, seed = 0):
+    def generate_df(self, n_panels, n_steps = 400, burn_in = 60, seed = 0):
         rng = np.random.default_rng(seed)
         return [self.generate(n_steps, burn_in, rng) for _ in range(n_panels)]
