@@ -3,7 +3,6 @@ Code for DFM synthetic data generator
 
 Design:
 DFM -> Base class
-
 """
 
 # Imports
@@ -21,18 +20,19 @@ class DFM:
         ----------
         k_factors: int
             Number of hidden common factors to extract
-            MACROCAST uses 3 factors .
+            MACROCAST uses 3 factors.
         factor_order: int
-            Number of lags in the factor dynamics — the p in the VAR(p)/AR(p) that
-            governs how the factors evolve over time (their momentum). MACROCAST uses 2.
+            Number of lags in the factor dynamics.
+            MACROCAST uses 2.
         maxiter: int, default 80
-            Cap on EM iterations when fitting DynamicFactorMQ (speed vs convergence
-            trade-off). Raise it if you see non-convergence warnings
+            Cap on EM iterations when fitting DynamicFactorMQ.
+            Defult in Macrocast implementation.
         """
 
         self.k_factors = k_factors
         self.factor_order = factor_order
         self.maxiter = maxiter
+        # Bundle is a dictionary of the results of the DFM
         self.bundle = None
 
     def fit_dfm(self, y_df):
@@ -52,22 +52,35 @@ class DFM:
             factor dynamics (var_meta: coefs + shock covariance), historical factor
             path (factors_hist), and dimensions (k, p).
         """
+
+        # Defining DFM
         model = DynamicFactorMQ(y_df, factors = self.k_factors, factor_orders = self.factor_order)
+        # Fitting DFM
         res = model.fit(disp = False, maxiter = self.maxiter)
+        # Saving output
         self.bundle = res
 
+        # Select the hidden factors. Models best guess of the factors at each time step.
         factors_df = res.factors.smoothed
         if isinstance(factors_df, pd.Series):
             factors_df = factors_df.to_frame("f1")
+        # Convert from Pandas to an Array. F is an Array of the factors
         F = np.asarray(factors_df, dtype = float)
 
+        # Y is a Array containing each series
         Y = y_df.values.astype(float)
 
+        # Regress the factors each series on the found factors to determine how strong each series reacts to each factor
         B = np.linalg.lstsq(F, Y, rcond = None)[0]
+        # F @ B rebuilds each series from the factors alone. Y - (F @ B) finds the residual, the leftover of each series the factors can't explain.
         resid = Y - F @ B
+        # STD of the residual
         resid_std = np.std(resid, axis = 0)
+        # Prevent divide by 0 errors with a 1e-8 saftey floor
         resid_std = np.where(resid_std < 1e-8, 1e-8, resid_std)
 
+        # Determine how much factors depend on past factors. Their momentum.
+        # If only one, fit an AR model
         if F.shape[1] == 1:
             f = pd.Series(F[:, 0])
             ar_fit = ARIMA(f, order = (self.factor_order, 0, 0), trend = 'n').fit()
@@ -76,6 +89,7 @@ class DFM:
                 'phi': np.asarray(getattr(ar_fit, 'arparams', np.array([])), dtype = float),
                 'cov': np.array([[float(max(ar_fit.scale, 1e-6))]])
             }
+        # Use a VAR if multiple factors
         else:
             var_fit = VAR(pd.DataFrame(F)).fit(maxlags = self.factor_order, trend = 'n')
             var_meta = {
@@ -106,14 +120,17 @@ class DFM:
             Total number of time steps to draw.
         rng: np.random.Generator
             Random source.
-            
+
         Returns
         -------
         np.ndarray
             Factor innovations drawn from the fitted factor covariance.
         """
+        # Grab the factors
         k = self.bundle['k']
+        # Grab the COV. (Factor @ t = 1) = momentum * (factor @ t = 0) + cov
         cov = self.bundle['var_meta']['cov']
+        # Draw k random factors of spread cov. Normal distribution. 
         return rng.multivariate_normal(np.zeros(k), cov, size = total)
 
     def generate(self, n_steps, burn_in, rng, shock_scale = 1.0, resid_scale = 1.0):
@@ -144,8 +161,10 @@ class DFM:
         var_meta = b['var_meta']
         total = n_steps + burn_in
 
+        # Draw the random shocks
         u = self._draw_factor_innovations(total, rng) * float(shock_scale)
 
+        # Grow new factor paths with momentum * factor  + shock
         factors = np.zeros((total, k))
         if var_meta['kind'] == 'ar1d':
             phi = var_meta['phi']
@@ -164,10 +183,13 @@ class DFM:
                         v += A[lag - 1] @ factors[t - lag]
                 factors[t] = v
 
+        # Throw away the first chunk of factors
         factors = factors[burn_in:]
+        # Draw series level residuals
         eps = rng.normal(0.0, resid_std, size = (n_steps, len(resid_std))) * float(resid_scale)
+        # Generate a new pannel from the factors @ series loadings + random resids
         return factors @ B + eps
 
-    def generate_df(self, n_panels, n_steps = 400, burn_in = 60, seed = 0):
+    def generate_pannels(self, n_panels, n_steps = 400, burn_in = 60, seed = 0):
         rng = np.random.default_rng(seed)
         return [self.generate(n_steps, burn_in, rng) for _ in range(n_panels)]
