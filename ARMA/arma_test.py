@@ -8,7 +8,7 @@ Tests and visualizations for arma_generator.py.
 import numpy as np
 import pytest
 
-from arma import generate_arma, is_stationary
+from ARMA.arma import generate_arma, is_stationary
 
 
 # ---------------------------------------------------------------------------
