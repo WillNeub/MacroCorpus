@@ -2,7 +2,7 @@
 Code for DFM-SV synthetic data generator
 
 Design:
-DFM    -> Base class (constant-variance factor shocks)
+DFM -> Base class (constant-variance factor shocks)
 DFM_SV -> DFM with stochastic volatility 
 """
 import numpy as np
